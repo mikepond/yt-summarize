@@ -143,7 +143,7 @@ class OutputGenerator:
     def generate_audio_summary(self, 
                               summary_text: str,
                               video_title: str,
-                              voice: str = "alloy",
+                              voice: str = "nova",
                               speed: float = 1.0) -> Optional[Path]:
         
         if not self.client:

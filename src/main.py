@@ -157,7 +157,7 @@ class VideoSummarizer:
               is_flag=True,
               help='Skip audio summary generation')
 @click.option('--voice', '-v',
-              type=click.Choice(['alloy', 'echo', 'fable', 'onyx', 'nova', 'shimmer']),
+              type=click.Choice(['alloy', 'echo', 'fable', 'onyx', 'nova', 'shimmer', 'sage']),
               default='alloy',
               help='Voice for audio summary')
 @click.option('--language', '-l',

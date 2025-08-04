@@ -11,6 +11,12 @@ class Summarizer:
             raise ValueError("OpenAI API key not provided. Set OPENAI_API_KEY environment variable.")
         
         self.client = OpenAI(api_key=self.api_key)
+        # Token limits for different models
+        self.token_limits = {
+            "gpt-4-turbo-preview": 128000,  # Total context window
+            "gpt-3.5-turbo": 16385,
+        }
+        self.max_chunk_tokens = 10000  # Safe chunk size for processing
     
     def summarize_transcript(self, 
                            transcript: str, 
@@ -19,12 +25,96 @@ class Summarizer:
         if not transcript:
             raise ValueError("No transcript provided for summarization")
         
+        # Estimate token count (rough approximation: 1 token ≈ 4 characters)
+        estimated_tokens = len(transcript) // 4
+        
         prompts = self._get_prompts(style)
         
+        # Check if we need to chunk the transcript
+        if estimated_tokens > self.max_chunk_tokens:
+            print(f"\n📊 Large transcript detected (~{estimated_tokens:,} tokens)")
+            print("   Splitting into chunks for processing...")
+            return self._summarize_chunked_transcript(transcript, style, prompts)
+        
         if style == "detailed":
-            return self._detailed_summary(transcript, prompts)
+            return self._detailed_summary(transcript, prompts, max_length)
         else:
             return self._simple_summary(transcript, prompts, max_length)
+    
+    def _split_transcript_into_chunks(self, transcript: str, max_chunk_chars: int = 40000) -> List[str]:
+        """Split transcript into chunks at sentence boundaries"""
+        sentences = re.split(r'(?<=[.!?])\s+', transcript)
+        chunks = []
+        current_chunk = []
+        current_length = 0
+        
+        for sentence in sentences:
+            sentence_length = len(sentence)
+            if current_length + sentence_length > max_chunk_chars and current_chunk:
+                chunks.append(' '.join(current_chunk))
+                current_chunk = [sentence]
+                current_length = sentence_length
+            else:
+                current_chunk.append(sentence)
+                current_length += sentence_length
+        
+        if current_chunk:
+            chunks.append(' '.join(current_chunk))
+        
+        return chunks
+    
+    def _summarize_chunked_transcript(self, transcript: str, style: str, prompts: Dict) -> Dict:
+        """Summarize a long transcript by chunking it"""
+        chunks = self._split_transcript_into_chunks(transcript)
+        chunk_summaries = []
+        
+        print(f"   Processing {len(chunks)} chunks...")
+        
+        # Summarize each chunk
+        for i, chunk in enumerate(chunks):
+            print(f"   Summarizing chunk {i+1}/{len(chunks)}...")
+            try:
+                if style == "detailed":
+                    # For detailed summaries, use brief style for chunks
+                    chunk_prompts = self._get_prompts("brief")
+                    chunk_summary = self._simple_summary(chunk, chunk_prompts, 500)
+                else:
+                    chunk_summary = self._simple_summary(chunk, prompts, 300)
+                
+                chunk_summaries.append(chunk_summary["summary"])
+            except Exception as e:
+                print(f"   ⚠️  Warning: Failed to summarize chunk {i+1}: {e}")
+                # Try with smaller model
+                try:
+                    chunk_summary = self._simple_summary_with_fallback(chunk, prompts, 300)
+                    chunk_summaries.append(chunk_summary["summary"])
+                except:
+                    chunk_summaries.append(f"[Chunk {i+1} summary failed]")
+        
+        # Create final summary from chunk summaries
+        combined_summary = "\n\n".join(chunk_summaries)
+        
+        print("   Creating final summary from chunks...")
+        final_prompt = {
+            "system": "You are an expert at synthesizing information. Create a cohesive summary from these section summaries.",
+            "user": f"Create a {style} summary by combining these section summaries into a cohesive whole:\n\n{combined_summary}"
+        }
+        
+        try:
+            if style == "detailed":
+                return self._detailed_summary(combined_summary, final_prompt, 2000)
+            else:
+                return self._simple_summary(combined_summary, final_prompt, 1000)
+        except Exception as e:
+            # Fallback: return concatenated summaries
+            print(f"   ⚠️  Warning: Failed to create final summary: {e}")
+            return {
+                "summary": combined_summary,
+                "style": style,
+                "word_count": len(combined_summary.split()),
+                "sections": {"main": combined_summary},
+                "note": "This is a concatenation of chunk summaries due to length constraints."
+            }
     
     def _get_prompts(self, style: str) -> Dict[str, str]:
         prompts = {
@@ -40,6 +130,8 @@ class Summarizer:
 3. Important details or examples mentioned
 4. Conclusion or takeaways
 
+This is a transcript of a video, so when referring to the source material, speak of it as a video rather than a transcript.
+
 Transcript:
 {transcript}"""
             },
@@ -50,6 +142,34 @@ Transcript:
         }
         
         return prompts.get(style, prompts["detailed"])
+    
+    def _simple_summary_with_fallback(self, transcript: str, prompts: Dict, max_length: Optional[int]) -> Dict:
+        """Try to summarize with gpt-3.5-turbo as fallback"""
+        try:
+            messages = [
+                {"role": "system", "content": prompts["system"]},
+                {"role": "user", "content": prompts["user"].format(transcript=transcript)}
+            ]
+            
+            response = self.client.chat.completions.create(
+                model="gpt-3.5-turbo",
+                messages=messages,
+                max_tokens=max_length or 1000,
+                temperature=0.7
+            )
+            
+            summary = response.choices[0].message.content
+            
+            return {
+                "summary": summary,
+                "style": "simple",
+                "word_count": len(summary.split()),
+                "sections": {"main": summary},
+                "model": "gpt-3.5-turbo"
+            }
+            
+        except Exception as e:
+            raise Exception(f"Fallback summarization also failed: {str(e)}")
     
     def _simple_summary(self, transcript: str, prompts: Dict, max_length: Optional[int]) -> Dict:
         try:
@@ -75,9 +195,13 @@ Transcript:
             }
             
         except Exception as e:
-            raise Exception(f"Summarization failed: {str(e)}")
+            error_str = str(e)
+            if "maximum context length" in error_str or "token" in error_str.lower():
+                print(f"   ⚠️  Token limit exceeded, trying with gpt-3.5-turbo...")
+                return self._simple_summary_with_fallback(transcript, prompts, max_length)
+            raise Exception(f"Summarization failed: {error_str}")
     
-    def _detailed_summary(self, transcript: str, prompts: Dict) -> Dict:
+    def _detailed_summary(self, transcript: str, prompts: Dict, max_length: Optional[int] = 2000) -> Dict:
         try:
             messages = [
                 {"role": "system", "content": prompts["system"]},
@@ -87,7 +211,7 @@ Transcript:
             response = self.client.chat.completions.create(
                 model="gpt-4-turbo-preview",
                 messages=messages,
-                max_tokens=2000,
+                max_tokens=max_length,
                 temperature=0.7
             )
             
@@ -102,7 +226,11 @@ Transcript:
             }
             
         except Exception as e:
-            raise Exception(f"Summarization failed: {str(e)}")
+            error_str = str(e)
+            if "maximum context length" in error_str or "token" in error_str.lower():
+                print(f"   ⚠️  Token limit exceeded, trying with gpt-3.5-turbo...")
+                return self._simple_summary_with_fallback(transcript, prompts, max_length)
+            raise Exception(f"Summarization failed: {error_str}")
     
     def _parse_sections(self, summary: str) -> Dict[str, str]:
         sections = {}
