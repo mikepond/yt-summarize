@@ -33,6 +33,10 @@ class VideoSummarizer:
                 voice: str = "alloy",
                 language: Optional[str] = None):
         
+        # Initialize paths for cleanup
+        video_path = None
+        audio_path = None
+        
         try:
             # Step 1: Handle video input
             print("\n🎬 Processing video input...")
@@ -80,9 +84,6 @@ class VideoSummarizer:
                     voice=voice
                 )
             
-            # Cleanup temporary files
-            self._cleanup_temp_files(video_path, audio_path, input_path)
-            
             print("\n✅ Summary generation complete!")
             print(f"\n📁 Output files:")
             print(f"   - Markdown: {markdown_path}")
@@ -98,6 +99,17 @@ class VideoSummarizer:
         except Exception as e:
             print(f"\n❌ Error: {str(e)}")
             raise
+        finally:
+            # Always cleanup temporary files, even on error
+            print("\n🧹 Cleaning up temporary files...")
+            if video_path and audio_path:
+                self._cleanup_temp_files(video_path, audio_path, input_path)
+            elif video_path:
+                # Only video was created before error
+                self._cleanup_on_error(video_path, None, input_path)
+            elif audio_path:
+                # Somehow only audio exists
+                self._cleanup_on_error(None, audio_path, input_path)
     
     def _cleanup_temp_files(self, video_path: Path, audio_path: Path, original_input: str):
         """Clean up temporary files, but keep original video if it was a local file"""
@@ -109,10 +121,31 @@ class VideoSummarizer:
         # Always delete extracted audio
         if audio_path.exists():
             audio_path.unlink()
+    
+    def _cleanup_on_error(self, video_path: Optional[Path], audio_path: Optional[Path], original_input: str):
+        """Clean up temporary files when an error occurs"""
+        try:
+            if video_path and video_path.exists():
+                if self.video_handler.is_youtube_url(original_input):
+                    video_path.unlink()
+                    print(f"   - Removed temporary video: {video_path.name}")
+            
+            if audio_path and audio_path.exists():
+                audio_path.unlink()
+                print(f"   - Removed temporary audio: {audio_path.name}")
+            
+            # Also clean up any chunk files that might have been created
+            temp_dir = Path("./temp")
+            for chunk_file in temp_dir.glob("chunk_*.mp3"):
+                chunk_file.unlink()
+                print(f"   - Removed chunk file: {chunk_file.name}")
+                
+        except Exception as cleanup_error:
+            print(f"   ⚠️  Warning: Could not clean up some files: {cleanup_error}")
 
 
 @click.command()
-@click.argument('input_path', type=str)
+@click.argument('input_path', type=str, required=False)
 @click.option('--style', '-s', 
               type=click.Choice(['brief', 'detailed', 'bullet']), 
               default='detailed',
@@ -131,12 +164,16 @@ class VideoSummarizer:
               type=str,
               default=None,
               help='Language code for transcription (e.g., en, es, fr)')
+@click.option('--clean-temp',
+              is_flag=True,
+              help='Clean temp directory and exit')
 def main(input_path: str, 
          style: str, 
          include_transcript: bool, 
          no_audio: bool,
          voice: str,
-         language: Optional[str]):
+         language: Optional[str],
+         clean_temp: bool):
     """
     Summarize YouTube videos or local video files.
     
@@ -157,6 +194,17 @@ def main(input_path: str,
     print("🎥 YouTube Video Summarizer")
     print("=" * 50)
     
+    # Handle temp directory cleanup
+    if clean_temp:
+        clean_temp_directory()
+        return
+    
+    # Check if input path is provided
+    if not input_path:
+        print("\n❌ Error: INPUT_PATH is required unless using --clean-temp")
+        print("Use --help for usage information.")
+        sys.exit(1)
+    
     # Check for API key
     if not os.getenv("OPENAI_API_KEY"):
         print("\n❌ Error: OPENAI_API_KEY not found in environment variables.")
@@ -176,6 +224,31 @@ def main(input_path: str,
         voice=voice,
         language=language
     )
+
+
+def clean_temp_directory():
+    """Clean all files from the temp directory"""
+    temp_dir = Path("./temp")
+    if not temp_dir.exists():
+        print("No temp directory found.")
+        return
+    
+    files_removed = 0
+    print("\n🧹 Cleaning temp directory...")
+    
+    try:
+        for file in temp_dir.iterdir():
+            if file.is_file():
+                file.unlink()
+                print(f"   - Removed: {file.name}")
+                files_removed += 1
+        
+        if files_removed == 0:
+            print("   - Temp directory is already clean.")
+        else:
+            print(f"\n✅ Removed {files_removed} file(s) from temp directory.")
+    except Exception as e:
+        print(f"❌ Error cleaning temp directory: {e}")
 
 
 if __name__ == "__main__":
