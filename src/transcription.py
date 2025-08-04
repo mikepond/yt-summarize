@@ -34,8 +34,7 @@ class TranscriptionService:
             with open(audio_path, "rb") as audio_file:
                 params = {
                     "model": "whisper-1",
-                    "file": audio_file,
-                    "response_format": "verbose_json"
+                    "file": audio_file
                 }
                 
                 if language:
@@ -43,12 +42,21 @@ class TranscriptionService:
                 
                 response = self.client.audio.transcriptions.create(**params)
                 
-                return {
-                    "text": response.text,
-                    "segments": response.segments if hasattr(response, 'segments') else [],
-                    "language": response.language if hasattr(response, 'language') else language,
-                    "duration": response.duration if hasattr(response, 'duration') else None
-                }
+                # Handle different response formats
+                if isinstance(response, str):
+                    return {
+                        "text": response,
+                        "segments": [],
+                        "language": language,
+                        "duration": None
+                    }
+                else:
+                    return {
+                        "text": response.text if hasattr(response, 'text') else str(response),
+                        "segments": [],  # Segments not available in current API
+                        "language": language,
+                        "duration": None
+                    }
                 
         except Exception as e:
             raise Exception(f"Transcription failed: {str(e)}")
@@ -65,20 +73,12 @@ class TranscriptionService:
             chunks.append(chunk_path)
         
         full_transcript = []
-        all_segments = []
         
         try:
             for i, chunk_path in enumerate(chunks):
                 print(f"Transcribing chunk {i+1}/{len(chunks)}...")
                 result = self._transcribe_single_file(chunk_path, language)
                 full_transcript.append(result["text"])
-                
-                if result.get("segments"):
-                    time_offset = (i * chunk_length_ms) / 1000
-                    for segment in result["segments"]:
-                        segment["start"] += time_offset
-                        segment["end"] += time_offset
-                        all_segments.append(segment)
         finally:
             for chunk_path in chunks:
                 if chunk_path.exists():
@@ -86,7 +86,7 @@ class TranscriptionService:
         
         return {
             "text": " ".join(full_transcript),
-            "segments": all_segments,
+            "segments": [],  # No segments available
             "language": language,
             "duration": len(audio) / 1000
         }

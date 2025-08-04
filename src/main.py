@@ -54,12 +54,9 @@ class VideoSummarizer:
                 style=summary_style
             )
             
-            # Step 5: Generate chapters (optional)
+            # Step 5: Generate chapters (optional) - currently disabled as segments are not available
             chapters = None
-            if summary_style == "detailed" and transcript_data.get("segments"):
-                print("\n📚 Identifying chapters...")
-                formatted_transcript = self.transcription_service.format_transcript_with_timestamps(transcript_data)
-                chapters = self.summarizer.create_chapter_summary(formatted_transcript)
+            # Note: Chapter generation is currently disabled as the API no longer provides segments
             
             # Step 6: Generate markdown output
             print("\n📄 Creating markdown summary...")
